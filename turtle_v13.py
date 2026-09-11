@@ -1,0 +1,439 @@
+"""Turtle Drawer stage 13: Add a grid and centre lines."""
+
+import tkinter as tk
+from tkinter import colorchooser, filedialog, messagebox, ttk
+
+
+# these are the sizes i picked for the drawing screen.
+# keeping them up here means i dont have to hunt around the whole code
+# to change something, i just change it once here.
+CANVAS_WIDTH = 700
+CANVAS_HEIGHT = 520
+# every 50 pixels i draw a grid line so its easier to line stuff up.
+GRID_SIZE = 50
+
+# starting colours for the shapes. blue for the inside and a dark outline.
+DEFAULT_FILL = "#3498db"
+DEFAULT_OUTLINE = "#222222"
+
+
+# a closed shape needs at least 3 corners to have an inside, so this
+# checks that before a part gets saved. if theres a problem it sends back
+# a message, and if its fine it sends back "".
+def polygon_error(points):
+    """Give a useful message if a polygon cannot be drawn properly."""
+    if len(points) < 3:
+        return "You need at least 3 points to finish a part."
+    return ""
+
+
+# this is the easy export, it just makes a readable txt file.
+# it doesnt draw anything, just saves the names colours and coordinates.
+def make_text(shape_name, parts):
+    """Make a text file with coordinates that can be copied into Python."""
+    # i build the whole file as a list of text lines first, then join
+    # them together with new lines right at the end.
+    lines = [
+        "CUSTOM TURTLE SHAPE COORDINATES",
+        f"Shape name: {shape_name}",
+        "",
+        "The centre of the drawing is (0, 0).",
+        "Positive y values go upwards in Turtle.",
+        "",
+    ]
+
+    # enumerate gives me the part number without needing another counter.
+    for number, part in enumerate(parts, start=1):
+        lines.extend([
+            f"Part {number}: {part['name']}",
+            f"Fill colour: {part['fill']}",
+            f"Outline colour: {part['outline']}",
+            f"part_{number}_points = {tuple(part['points'])!r}",
+            "",
+        ])
+
+    return "\n".join(lines)
+
+
+# this is the big export function. it writes a whole other python program.
+# the new file uses turtle to register the drawing as a custom shape.
+# !r puts quotes around the names properly, even if a name has quotes in it.
+def make_python(shape_name, parts):
+    """Make a complete Python Turtle program from the finished parts."""
+    lines = [
+        '"""A custom Turtle shape made with Turtle Drawer."""',
+        "import turtle",
+        "",
+        "# Set up the Turtle window.",
+        "screen = turtle.Screen()",
+        f"screen.title({shape_name!r})",
+        f"screen.setup({CANVAS_WIDTH + 100}, {CANVAS_HEIGHT + 100})",
+        'screen.bgcolor("#f0f4f8")',
+        "",
+    ]
+
+    # if theres only one part, turtle can register that polygon on its own.
+    if len(parts) == 1:
+        part = parts[0]
+        lines.extend([
+            "# This is the outline of the shape you drew.",
+            f"points = {tuple(part['points'])!r}",
+            f"screen.register_shape({shape_name!r}, points)",
+            "",
+            "# Give the shape its colours.",
+            "drawer = turtle.Turtle()",
+            f"drawer.shape({shape_name!r})",
+            f"drawer.color({part['outline']!r}, {part['fill']!r})",
+        ])
+    # more than one part means they get joined into one compound shape,
+    # where every part keeps its own colours.
+    else:
+        lines.extend([
+            "# Put all the coloured parts together into one shape.",
+            'custom_shape = turtle.Shape("compound")',
+            "",
+        ])
+        for number, part in enumerate(parts, start=1):
+            lines.extend([
+                f"# Part {number}: {part['name']}",
+                f"part_{number}_points = {tuple(part['points'])!r}",
+                f"custom_shape.addcomponent(part_{number}_points, "
+                f"{part['fill']!r}, {part['outline']!r})",
+                "",
+            ])
+        lines.extend([
+            "# Let Turtle use the shape we made.",
+            f"screen.register_shape({shape_name!r}, custom_shape)",
+            "",
+            "drawer = turtle.Turtle()",
+            f"drawer.shape({shape_name!r})",
+        ])
+
+    # these lines are the same for both kinds of shape.
+    # turtle points a custom shape the way the turtle is facing, and it
+    # starts facing right, so without setheading(90) the shape comes out
+    # on its side.
+    lines.extend([
+        "drawer.penup()",
+        "# Keep the exported shape facing the same way as the drawing canvas.",
+        "drawer.setheading(90)",
+        "drawer.speed(3)",
+        "",
+        "# Stamp the finished shape in the middle of the screen.",
+        "drawer.stamp()",
+        "drawer.hideturtle()",
+        "",
+        "# You can move the turtle and stamp more copies if you want.",
+        "# drawer.goto(150, 0)",
+        "# drawer.stamp()",
+        "",
+        "turtle.done()",
+        "",
+    ])
+
+    return "\n".join(lines)
+
+
+# this class is basically where the whole program is.
+# it keeps the drawing, the buttons and the file exports together.
+class TurtleDrawer:
+    """Keep the drawing, buttons and file actions together."""
+
+    # this runs when i first open the program.
+    # it sets up the window and makes the empty lists that hold the drawing.
+    def __init__(self, window):
+        self.window = window
+        self.window.title("Turtle Shape Drawer")
+
+        # finished parts go in here. every part is a dictionary with its
+        # name, points and colours. later parts get drawn on top.
+        self.parts = []
+        # these are only the unfinished points the user is clicking now.
+        self.points = []
+        # remember the colours for the NEXT part, not the finished ones.
+        self.fill = DEFAULT_FILL
+        self.outline = DEFAULT_OUTLINE
+        # StringVar keeps the text box and the actual value connected.
+        self.shape_name = tk.StringVar(value="my_shape")
+        self.part_name = tk.StringVar(value="Part 1")
+        # small message under the buttons so the user knows whats happening.
+        self.status = tk.StringVar(
+            value="Click on the canvas to place your first point."
+        )
+
+        self.make_interface()
+        self.redraw_canvas()
+
+    # this is where i put together the actual screen people click on.
+    # the canvas goes on the left and the tools go on the right.
+    def make_interface(self):
+        self.canvas = tk.Canvas(
+            self.window, width=CANVAS_WIDTH, height=CANVAS_HEIGHT, bg="white"
+        )
+        self.canvas.pack(side="left", anchor="n", padx=10, pady=10)
+        # every left click on the canvas calls add_point.
+        self.canvas.bind("<Button-1>", self.add_point)
+
+        tools = ttk.Frame(self.window, padding=10)
+        tools.pack(side="right", fill="both")
+        ttk.Label(tools, text="Turtle Shape Drawer").pack(pady=5)
+
+        # the shape name goes into the exported program, and each part gets
+        # its own name like roof, door or window.
+        ttk.Label(tools, text="Shape name").pack(anchor="w")
+        ttk.Entry(tools, textvariable=self.shape_name).pack(fill="x")
+        ttk.Label(tools, text="Name for the next part").pack(anchor="w")
+        ttk.Entry(tools, textvariable=self.part_name).pack(
+            fill="x", pady=(0, 5)
+        )
+
+        # picked colours show up in these little sample strips too.
+        ttk.Button(
+            tools, text="Fill colour", command=self.choose_fill
+        ).pack(fill="x")
+        self.fill_sample = tk.Label(tools, bg=self.fill)
+        self.fill_sample.pack(fill="x", pady=(0, 3))
+        ttk.Button(
+            tools, text="Outline colour", command=self.choose_outline
+        ).pack(fill="x")
+        self.outline_sample = tk.Label(tools, bg=self.outline)
+        self.outline_sample.pack(fill="x", pady=(0, 5))
+
+        ttk.Button(
+            tools, text="Finish part", command=self.finish_part
+        ).pack(fill="x", pady=3)
+        ttk.Button(
+            tools, text="Undo point", command=self.undo_point
+        ).pack(fill="x", pady=3)
+        ttk.Button(
+            tools, text="Cancel unfinished part", command=self.cancel_points
+        ).pack(fill="x", pady=3)
+
+        ttk.Button(
+            tools, text="Export Python", command=self.export_python
+        ).pack(fill="x", pady=3)
+        ttk.Button(
+            tools, text="Save points .txt", command=self.export_text
+        ).pack(fill="x", pady=3)
+        ttk.Button(
+            tools, text="Clear everything", command=self.clear_all
+        ).pack(fill="x", pady=3)
+
+        ttk.Label(tools, textvariable=self.status, wraplength=250).pack(
+            pady=10
+        )
+
+    # this repaints the entire drawing area from scratch.
+    # sounds like a lot but for these small shapes its simple and quick.
+    def redraw_canvas(self):
+        # remove whats there first so we dont draw copies on top.
+        self.canvas.delete("all")
+
+        # light grid lines make it easier to line points up.
+        for x in range(0, CANVAS_WIDTH + 1, GRID_SIZE):
+            self.canvas.create_line(x, 0, x, CANVAS_HEIGHT, fill="#ecf0f4")
+        for y in range(0, CANVAS_HEIGHT + 1, GRID_SIZE):
+            self.canvas.create_line(0, y, CANVAS_WIDTH, y, fill="#ecf0f4")
+        # these darker dashed lines cross at turtle's (0, 0).
+        self.canvas.create_line(
+            CANVAS_WIDTH // 2, 0, CANVAS_WIDTH // 2, CANVAS_HEIGHT,
+            fill="#a9b8cb", dash=(4, 4),
+        )
+        self.canvas.create_line(
+            0, CANVAS_HEIGHT // 2, CANVAS_WIDTH, CANVAS_HEIGHT // 2,
+            fill="#a9b8cb", dash=(4, 4),
+        )
+
+        # draws each finished polygon from the back layer to the front one.
+        for part in self.parts:
+            # the points are turtle coordinates, so they get turned back
+            # into canvas pixels. tkinter wants one flat list of x and y
+            # values, not pairs.
+            canvas_points = []
+            for x, y in part["points"]:
+                canvas_points.extend(
+                    [x + CANVAS_WIDTH // 2, CANVAS_HEIGHT // 2 - y]
+                )
+            self.canvas.create_polygon(
+                canvas_points,
+                fill=part["fill"],
+                outline=part["outline"],
+                width=2,
+            )
+
+        # little numbered dots for the part thats still being drawn, so you
+        # can see the order the corners join up in.
+        canvas_points = []
+        for number, (x, y) in enumerate(self.points, start=1):
+            px = x + CANVAS_WIDTH // 2
+            py = CANVAS_HEIGHT // 2 - y
+            canvas_points.extend([px, py])
+            self.canvas.create_oval(
+                px - 4, py - 4, px + 4, py + 4,
+                fill=self.fill, outline=self.outline,
+            )
+            self.canvas.create_text(
+                px + 12, py - 11, text=str(number), fill="#303b49",
+                font=("Arial", 9),
+            )
+
+        # a line needs at least two points, which is 4 numbers in the list.
+        if len(canvas_points) >= 4:
+            self.canvas.create_line(
+                canvas_points, fill=self.fill, width=2, dash=(5, 3)
+            )
+
+    # this runs whenever you click the drawing area.
+    # it turns the mouse position into turtle coordinates and saves it.
+    def add_point(self, event):
+        # tkinter starts at the top left with y going down, but turtle
+        # starts in the middle with y going up. saving turtle coordinates
+        # means the export doesnt have to change anything.
+        point = (event.x - CANVAS_WIDTH // 2, CANVAS_HEIGHT // 2 - event.y)
+        self.points.append(point)
+        self.status.set(f"Point {len(self.points)} added at {point}.")
+        self.redraw_canvas()
+
+    # click this after placing all the corners for one piece of the shape.
+    # it checks the points before turning them into a finished part.
+    def finish_part(self):
+        # let the polygon checker decide if the part is good enough.
+        problem = polygon_error(self.points)
+        # show the actual problem instead of silently ignoring the button.
+        if problem:
+            messagebox.showwarning("Check your points", problem)
+            return
+
+        # if they leave the name blank i make one so it still looks tidy.
+        name = self.part_name.get().strip() or f"Part {len(self.parts) + 1}"
+        # copy matters because im about to empty the unfinished points.
+        self.parts.append({
+            "name": name,
+            "points": self.points.copy(),
+            "fill": self.fill,
+            "outline": self.outline,
+        })
+        self.points.clear()
+        self.part_name.set(f"Part {len(self.parts) + 1}")
+        self.redraw_canvas()
+        self.status.set(f"{name} is finished. You can start another part.")
+
+    # this is only for the unfinished part, not the already saved parts.
+    def undo_point(self):
+        # only try popping a point if theres actually one there.
+        if self.points:
+            # pop removes the most recent click, like a one step undo.
+            self.points.pop()
+            self.redraw_canvas()
+            self.status.set("The last point was removed.")
+        else:
+            self.status.set("There are no unfinished points to undo.")
+
+    # instead of one undo, this throws away every unfinished point at once.
+    def cancel_points(self):
+        self.points.clear()
+        self.redraw_canvas()
+        self.status.set("The unfinished points were cleared.")
+
+    # opens the colour picker for the inside of the next part.
+    def choose_fill(self):
+        # askcolor returns two things and the second one is the colour
+        # code i need. if they cancel, its None so the old colour stays.
+        colour = colorchooser.askcolor(
+            color=self.fill, title="Choose a fill colour"
+        )[1]
+        if colour:
+            self.fill = colour
+            self.fill_sample.configure(bg=colour)
+            self.redraw_canvas()
+
+    # same colour picker idea but this one changes the border colour.
+    def choose_outline(self):
+        colour = colorchooser.askcolor(
+            color=self.outline, title="Choose an outline colour"
+        )[1]
+        if colour:
+            self.outline = colour
+            self.outline_sample.configure(bg=colour)
+            self.redraw_canvas()
+
+    # this resets the whole drawing so the user can start again.
+    def clear_all(self):
+        self.parts.clear()
+        self.points.clear()
+        self.redraw_canvas()
+        self.status.set("The drawing was cleared.")
+
+    # before exporting i make sure theres actually a finished shape, so
+    # nobody saves an empty file or forgets their last bit.
+    def ready_to_export(self):
+        if self.points or not self.parts:
+            self.status.set("Finish your drawing before exporting.")
+            return False
+        return True
+
+    # grab what they typed for the shape name, with a backup if its empty.
+    def get_shape_name(self):
+        return self.shape_name.get().strip() or "my_shape"
+
+    # both export buttons use this, so the file writing and error handling
+    # are only written once.
+    def write_file(self, path, content):
+        # file stuff can fail because of permissions or a folder that got
+        # deleted, so this shows an error instead of crashing.
+        try:
+            # with closes the file for me, even if writing goes wrong.
+            # utf-8 means names with accents or emoji save properly.
+            with open(path, "w", encoding="utf-8") as file:
+                file.write(content)
+        except OSError as error:
+            messagebox.showerror(
+                "Could not save", f"The file could not be saved.\n{error}"
+            )
+            return
+
+        self.status.set(f"Saved your file to {path}")
+        messagebox.showinfo("File saved", "Your file has been saved.")
+
+    # this asks where to save, then writes the turtle program there.
+    def export_python(self):
+        if not self.ready_to_export():
+            return
+        path = filedialog.asksaveasfilename(
+            title="Export your Turtle program",
+            defaultextension=".py",
+            filetypes=[("Python files", "*.py")],
+        )
+        # an empty path means they cancelled the save box.
+        if path:
+            content = make_python(self.get_shape_name(), self.parts)
+            self.write_file(path, content)
+
+    # same idea as the python export, but for the text file.
+    def export_text(self):
+        if not self.ready_to_export():
+            return
+        path = filedialog.asksaveasfilename(
+            title="Save your coordinates",
+            defaultextension=".txt",
+            filetypes=[("Text files", "*.txt")],
+        )
+        # an empty path means they cancelled the save box.
+        if path:
+            content = make_text(self.get_shape_name(), self.parts)
+            self.write_file(path, content)
+
+
+# starting point for the program so its clear how everything launches.
+def main():
+    # make the real tkinter window and hand it into the app class.
+    window = tk.Tk()
+    TurtleDrawer(window)
+    # this keeps the window open so buttons and clicks actually work.
+    window.mainloop()
+
+
+# only start the app when this file is run directly, not if another file
+# imports it.
+if __name__ == "__main__":
+    main()
